@@ -83,9 +83,11 @@ def read_until(fd, needle, timeout=5):
     raise AssertionError("timed out waiting for %r; got %r" % (needle, data))
 
 
-def spawn_on_controlling_pty(argv):
+def spawn_on_controlling_pty(argv, env=None):
     pid, master = pty.fork()
     if pid == 0:
+        if env:
+            os.environ.update(env)
         os.execvp(argv[0], argv)
     proc = ForkedProc(pid)
     PROCS.append(proc)
@@ -101,11 +103,14 @@ def stop_process(proc):
             proc.kill()
 
 
-def exercise_attach(reptyr_args, initial_word, attached_word):
-    child, child_fd = spawn_on_controlling_pty(["test/darwin-victim"])
+def exercise_attach(reptyr_args, initial_word, attached_word, child_env=None):
+    child, child_fd = spawn_on_controlling_pty(["test/darwin-victim"], child_env)
     try:
-        os.write(child_fd, (initial_word + "\n").encode("ascii"))
-        read_until(child_fd, ("ECHO: " + initial_word).encode("ascii"))
+        if initial_word is not None:
+            os.write(child_fd, (initial_word + "\n").encode("ascii"))
+            read_until(child_fd, ("ECHO: " + initial_word).encode("ascii"))
+        else:
+            read_until(child_fd, b"READY")
 
         reptyr, reptyr_fd = spawn_on_controlling_pty(["./reptyr", "-V"] + reptyr_args + [str(child.pid)])
         read_until(reptyr_fd, b"Darwin fd redirect payload completed")
@@ -119,6 +124,7 @@ def exercise_attach(reptyr_args, initial_word, attached_word):
 try:
     codesign_for_task_for_pid("./reptyr", "test/darwin-victim")
     exercise_attach(["-s"], "hello", "world")
+    exercise_attach(["-s"], None, "restored", {"DARWIN_VICTIM_CLOSE_STDIN": "1"})
     exercise_attach([], "plain", "attach")
 finally:
     for proc in reversed(PROCS):

@@ -209,6 +209,7 @@ out:
     return err;
 }
 
+#define ARM64_COND_EQ 0u
 #define ARM64_COND_CS 2u
 #define DARWIN_PAYLOAD_STEP_OPEN 1u
 #define DARWIN_PAYLOAD_STEP_DUP2_BASE 100u
@@ -255,7 +256,7 @@ static int darwin_redirect_fds(task_t task, const char *pty, const int *target_f
     mach_vm_address_t result_addr = 0;
     mach_vm_size_t result_size = 4096;
     mach_vm_address_t code = 0;
-    mach_vm_size_t code_size = 4096;
+    mach_vm_size_t code_size = 8192;
     mach_vm_address_t stack = 0;
     mach_vm_size_t stack_size = 64 * 1024;
     thread_act_array_t threads = NULL;
@@ -264,8 +265,9 @@ static int darwin_redirect_fds(task_t task, const char *pty, const int *target_f
     thread_act_t thread = MACH_PORT_NULL;
     kern_return_t kr;
     struct remote_result result = {0};
-    uint32_t insns[64 + DARWIN_MAX_REDIRECT_FDS * 12];
+    uint32_t insns[64 + DARWIN_MAX_REDIRECT_FDS * 18];
     size_t error_branches[2 + DARWIN_MAX_REDIRECT_FDS];
+    size_t skip_close_branches[DARWIN_MAX_REDIRECT_FDS];
     size_t n = 0;
     size_t error_label;
     arm_thread_state64_t saved_state;
@@ -326,10 +328,20 @@ static int darwin_redirect_fds(task_t task, const char *pty, const int *target_f
         error_branches[1 + i] = emit_syscall_error_branch(insns, &n, DARWIN_PAYLOAD_STEP_DUP2_BASE + (unsigned)i);
     }
 
+    for (i = 0; i < target_fd_count; i++) {
+        /* If open() reused a closed target fd, closing x20 would undo the redirect. */
+        n += emit_mov64(&insns[n], 21, (uint64_t)target_fds[i]);
+        insns[n++] = 0xeb15029fu; /* cmp x20, x21 */
+        skip_close_branches[i] = n++;
+    }
+
     /* close(x20); */
     insns[n++] = 0xaa1403e0u; /* mov x0, x20 */
     n += emit_mov64(&insns[n], 16, SYS_close);
     error_branches[1 + target_fd_count] = emit_syscall_error_branch(insns, &n, DARWIN_PAYLOAD_STEP_CLOSE);
+
+    for (i = 0; i < target_fd_count; i++)
+        patch_cond_branch(insns, skip_close_branches[i], n, ARM64_COND_EQ);
 
     emit_success_report(insns, &n, result_addr);
     error_label = n;

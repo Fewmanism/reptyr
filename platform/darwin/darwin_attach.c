@@ -479,9 +479,9 @@ out:
         }
     }
 
-    if (remote_pty)
+    if (remote_pty && can_deallocate_payload)
         mach_vm_deallocate(task, remote_pty, remote_pty_size);
-    if (result_addr)
+    if (result_addr && can_deallocate_payload)
         mach_vm_deallocate(task, result_addr, result_size);
     if (code && can_deallocate_payload)
         mach_vm_deallocate(task, code, code_size);
